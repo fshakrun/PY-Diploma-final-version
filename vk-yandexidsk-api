@@ -1,0 +1,134 @@
+import pprint
+import datetime
+import json
+from urllib.parse import urljoin
+import requests
+
+
+class Picture:
+    name = ''
+
+    def __init__(self, date, likes, sizes):
+        self.date = date
+        self.likes = likes
+        self.sizes = sizes
+        self.size_type = sizes['type']
+        self.url = sizes['url']
+        self.maxsize = max(sizes['width'], sizes['height'])
+
+    def __repr__(self):
+        return f'date: {self.date}, likes: {self.likes}, size: {self.maxsize}, url: {self.url}'
+
+
+class VkApi:
+    VK_TOKEN = ""
+
+    def __init__(self, VK_TOKEN: str):
+        self.vk_token = VK_TOKEN
+
+    @staticmethod
+    def find_hugest(sizes):
+        sizes_chart = ['x', 'z', 'y', 'r', 'q', 'p', 'o', 'x', 'm', 's']
+        for chart in sizes_chart:
+            for size in sizes:
+                if size['type'] == chart:
+                    return size
+
+    def get_pictures(self, uid, qty=5):
+        response = requests.get('https://api.vk.com/method/photos.get', params={
+            'access_token': self.vk_token,
+            'v': '5.131',
+            'owner_id': uid,
+            'album_id': 'profile',
+            'photo_sizes': 1,
+            'extended': 1,
+        })
+        #.json().get('response').get('items')
+        try:
+            response = response.json().get('response').get('items')
+            print('Получаю информацию о фотографиях…')
+            return sorted([Picture(photo.get('date'),
+                                   photo.get('likes')['count'],
+                                   self.find_hugest(photo.get('sizes'))) for photo in response],
+                          key=lambda p: p.maxsize, reverse=True)[:qty]
+        except:
+            print(response.json().get('error').get('error_msg'))
+            return False
+
+
+
+class YanApi:
+    @staticmethod
+    def create_file_names(photos):
+        for photo in photos:
+            photo.name = str(photo.likes) + '_' + str(photo.date) + '.jpg'
+
+    @staticmethod
+    def check_folder_name(n_folder, ex_folders):
+        print(f"Проверяю присутствие папки {n_folder}")
+        if str(n_folder) not in ex_folders:
+            print(f"Папка {n_folder} не найдена")
+            return n_folder, False
+
+        print(f"Папка {n_folder} найдена")
+        return n_folder, True
+
+    def __init__(self, token: str):
+        self.auth = f'OAuth {token}'
+
+    def get_folders(self):
+        return [a['name'] for a in (requests.get("https://cloud-api.yandex.net/v1/disk/resources",
+                                                 params={"path": '/'},
+                                                 headers={"Authorization": self.auth})
+                                    .json().get('_embedded').get('items')) if a['type'] == 'dir']
+
+    def create_folder(self, folder_name):
+        resp = requests.put("https://cloud-api.yandex.net/v1/disk/resources",
+                            params={"path": '/' + folder_name},
+                            headers={"Authorization": self.auth})
+        print(f'Создаю папку на Я.Диске… "{folder_name}":')
+        return resp.status_code
+
+    def upload(self, uid, photos):
+        if photos is not False:
+            upload_folder, exist = self.check_folder_name(uid, self.get_folders())
+            if exist is False:
+
+                if self.create_folder(str(upload_folder)) == 201:
+                    print(f"Папка {upload_folder} успешно создана")
+                else:
+                    print(f'Ошибка в создании папки {upload_folder}')
+
+            self.create_file_names(photos)
+
+            log_result = []
+
+            for photo in photos:
+                response = requests.post("https://cloud-api.yandex.net/v1/disk/resources/upload",
+                                         params={"path": '/' + str(upload_folder) + '/' + str(photo.name),
+                                                 "url": str(photo.url)},
+                                         headers={"Authorization": self.auth})
+                if response.status_code == 202:
+                    print(f'Фото "{photo.name}" загружено.')
+                    log_result.append({"file_name": photo.name, "size": photo.sizes['height']})
+                else:
+                    print(f'При загрузке "{photo.name}" произошла ошибка: '
+                          f'{response.json().get("message")}. Status code: {response.status_code}')
+                with open(f'{datetime.datetime.now().strftime("%m_%d_%Y_%H_%M_%S")}_files.json', "w") as f:
+                    json.dump(log_result, f, indent=2)
+            print("Загрузка завершена")
+
+
+def init():
+    VK_TOKEN = input('Введите Vk токен ')
+    YANDEX_TOKEN = input('Введите ваш токен от Я.Диска: ')
+    uid = int(input('Id профиля ВК: '))
+    qty = int(input('Нужное количество фотографий: '))
+
+    vk_api: VkApi = VkApi(VK_TOKEN)
+    ya_api: YanApi = YanApi(YANDEX_TOKEN)
+    ya_api.upload(uid, vk_api.get_pictures(uid, qty))
+
+
+if __name__ == '__main__':
+    init()
